@@ -1,0 +1,12 @@
+body{font-family:"Noto Sans CJK KR","Noto Sans KR",sans-serif;margin:0;padding:28px 32px;background:#fff;color:#1d2433;width:1100px}
+h1{font-size:26px;margin:0}.sub{color:#667;font-size:14px;margin:6px 0 18px}
+table.sum{border-collapse:collapse;width:100%;font-size:14px;margin-bottom:22px}
+.sum th{background:#1f3a5f;color:#fff;padding:8px;text-align:left}.sum td{border-bottom:1px solid #e3e6ec;padding:8px}.n{text-align:center;font-weight:700}
+.mons{display:flex;gap:18px}.mon{flex:1}h2{font-size:18px;margin:0 0 8px}
+.mon table{border-collapse:collapse;width:100%;table-layout:fixed}.mon th{font-size:13px;padding:4px;background:#f2f4f8}
+.mon td{border:1px solid #e3e6ec;height:70px;vertical-align:top;padding:3px}td.out{background:#fafafa}
+.dn{font-size:12px;font-weight:700;margin-bottom:2px}.sun{color:#d33}.sat{color:#2a5bd7}
+.chip{font-size:10.5px;border-radius:4px;padding:1px 4px;margin-top:2px;display:flex;justify-content:space-between}
+.bk{background:#1f7a4d;color:#fff}.av{background:#eef1f5;color:#8a93a3}.pd{background:#f2a33a;color:#fff}.na{background:#fff;color:#aaa;border:1px dashed #ccc}.er{background:#fde2e2;color:#c33}
+.past{font-size:10px;color:#bbb}.leg{font-size:13px;margin:4px 0 14px;display:flex;gap:14px}.leg span{padding:2px 8px;border-radius:4px}
+.note{font-size:12px;color:#778;margin-top:14px}
