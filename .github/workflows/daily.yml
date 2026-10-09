@@ -1,8 +1,8 @@
 name: 펜션 예약 현황 (매일 23:59)
 on:
   schedule:
-    - cron: "59 14 * * *"
-  workflow_dispatch: {}
+    - cron: "59 14 * * *"   # 한국시간 23:59 (UTC 14:59)
+  workflow_dispatch: {}      # 수동 실행 버튼
 permissions:
   contents: write
 jobs:
@@ -18,10 +18,25 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
       - name: 현황 이미지 생성
-        run: python check.py --no-send
-      - name: 이미지 저장
+        run: python check.py --no-send --evidence
+      - name: 증거 기록 저장 (비공개 저장소 pension-evidence)
+        continue-on-error: true
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git clone "https://x-access-token:${GH_PAT}@github.com/${{ github.repository_owner }}/pension-evidence.git" ev
+          mkdir -p ev/records
+          cp -r out/evidence/* ev/records/
+          d=$(ls out/evidence | head -1); cp out/report.png "ev/records/$d/현황표.png"
+          cd ev
+          git config user.name "bot"; git config user.email "bot@users.noreply.github.com"
+          git add -A
+          git commit -m "기록 $(TZ=Asia/Seoul date '+%F %H:%M')" || echo "변경 없음"
+          git push
+      - name: 이미지 저장 (reports 브랜치)
         run: |
           git config user.name "bot"; git config user.email "bot@users.noreply.github.com"
+          git fetch origin reports || true
           git switch --orphan tmp-reports
           git rm -rf --cached . >/dev/null 2>&1 || true
           cp out/report.png latest.png; cp out/report.png "$(TZ=Asia/Seoul date +%Y-%m-%d).png"
@@ -36,4 +51,4 @@ jobs:
           IMAGE_URL: https://raw.githubusercontent.com/${{ github.repository }}/reports/latest.png
         run: |
           git checkout -f ${{ github.sha }}
-          python -c "import check,os,time; t=open('out/summary.txt',encoding='utf-8').read().splitlines(); u=os.environ['IMAGE_URL']+'?t='+str(int(time.time())); check.kakao_send(t,u,u)"
+          python -c "import check,os,time,json; t=[l for l in open('out/summary.txt',encoding='utf-8').read().splitlines()]; u=os.environ['IMAGE_URL']+'?t='+str(int(time.time())); check.kakao_send(t,u,u)"
