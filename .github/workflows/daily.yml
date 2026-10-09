@@ -1,0 +1,39 @@
+name: 펜션 예약 현황 (매일 23:59)
+on:
+  schedule:
+    - cron: "59 14 * * *"
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: 설치
+        run: |
+          sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+      - name: 현황 이미지 생성
+        run: python check.py --no-send
+      - name: 이미지 저장
+        run: |
+          git config user.name "bot"; git config user.email "bot@users.noreply.github.com"
+          git switch --orphan tmp-reports
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          cp out/report.png latest.png; cp out/report.png "$(TZ=Asia/Seoul date +%Y-%m-%d).png"
+          git add *.png; git commit -m "report $(TZ=Asia/Seoul date +%F)"
+          git push -f origin tmp-reports:reports
+      - name: 카카오톡 전송
+        env:
+          KAKAO_REST_KEY: ${{ secrets.KAKAO_REST_KEY }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          IMAGE_URL: https://raw.githubusercontent.com/${{ github.repository }}/reports/latest.png
+        run: |
+          git checkout -f ${{ github.sha }}
+          python -c "import check,os,time; t=open('out/summary.txt',encoding='utf-8').read().splitlines(); u=os.environ['IMAGE_URL']+'?t='+str(int(time.time())); check.kakao_send(t,u,u)"
