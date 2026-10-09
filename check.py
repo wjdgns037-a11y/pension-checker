@@ -9,6 +9,11 @@ BASE = "http://pensioncity.kr/bbs/board.php"
 TARGETS = [("퐁네프", "파리", "파리동"), ("베른", "스위스", "스위스동")]  # (객실명, rm_cate, 동 이름)
 STATUS = {"완료": "bk", "예약하기": "av", "결제중": "pd", "대기": "pd"}
 LABEL = {"bk": "예약", "av": "빈방", "pd": "결제중", "na": "미오픈", "er": "확인실패"}
+# 위탁업체 정산 방식 (2026년 1~8월 정산서 기준)
+FEE_RATE = 0.10   # 부대사용료: 펜션금액의 10% 선공제
+SHARE = 0.50      # 남은 금액(실사용금액)의 50%가 건축주 몫
+DEDUCT = {"퐁네프": 175053, "베른": 168021}  # 매월 고정 공제(세스코·정화조·진입도로·정수기 등)
+def net_of(gross, room): return int(gross * (1 - FEE_RATE) * SHARE) - DEDUCT.get(room, 0)
 HEAD = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/129.0 Safari/537.36"}
 
 def fetch_day(cate, day):
@@ -65,30 +70,30 @@ def month_html(y, m, data):
     return h + "</table></div>"
 
 def won(n): return f"{n:,}원"
-def man(n): return f"{n/10000:g}만"
+def man(n): return f"{round(n/10000):,}만"
 
 def summary(data, months):
-    rows, text, grand = "", [], [0, 0]
+    rows, text, grand = "", [], [0, 0, 0]
     for y, m in months:
         ds = sorted(d for d in data if (d.year, d.month) == (y, m))
-        mt = [0, 0]
+        mt = [0, 0, 0]
         for j, (room, _, dong) in enumerate(TARGETS):
             bk = [d for d in ds if data[d][j][0] == "bk"]; pd = [d for d in ds if data[d][j][0] == "pd"]
             bs = sum(data[d][j][1] for d in bk); ps = sum(data[d][j][1] for d in pd)
-            mt[0] += bs; mt[1] += ps
+            mt[0] += bs; mt[1] += ps; mt[2] += net_of(bs+ps, room)
             f = lambda L: ", ".join(f"{d.month}/{d.day}" for d in L) or "-"
             rows += (f'<tr><td>{m}월</td><td><b>{room} ({dong})</b></td><td class="n">{len(bk)}박</td><td class="r">{won(bs)}</td>'
-                     f'<td class="n">{len(pd)}박</td><td class="r">{won(ps)}</td><td class="r"><b>{won(bs+ps)}</b></td><td class="dt">{f(bk)}{" / 결제중 " + f(pd) if pd else ""}</td></tr>')
+                     f'<td class="n">{len(pd)}박</td><td class="r">{won(ps)}</td><td class="r"><b>{won(bs+ps)}</b></td><td class="r net">{won(net_of(bs+ps, room))}</td><td class="dt">{f(bk)}{" / 결제중 " + f(pd) if pd else ""}</td></tr>')
             text.append(f"[{m}월] {room} {len(bk)}박 {man(bs)}" + (f" (+결제중 {len(pd)}박 {man(ps)})" if pd else ""))
-        rows += f'<tr class="tot"><td>{m}월</td><td>합계</td><td></td><td class="r">{won(mt[0])}</td><td></td><td class="r">{won(mt[1])}</td><td class="r"><b>{won(mt[0]+mt[1])}</b></td><td></td></tr>'
-        text.append(f"[{m}월] 예상 매출 합계 {man(mt[0]+mt[1])}")
-        grand[0] += mt[0]; grand[1] += mt[1]
+        rows += f'<tr class="tot"><td>{m}월</td><td>합계</td><td></td><td class="r">{won(mt[0])}</td><td></td><td class="r">{won(mt[1])}</td><td class="r"><b>{won(mt[0]+mt[1])}</b></td><td class="r net">{won(mt[2])}</td><td></td></tr>'
+        text.append(f"[{m}월] 예상 매출 {man(mt[0]+mt[1])} → 실수령 {man(mt[2])}")
+        grand[0] += mt[0]; grand[1] += mt[1]; grand[2] += mt[2]
     return rows, text, grand
 
 CSS = open(os.path.join(os.path.dirname(__file__), "style.css"), encoding="utf-8").read() + """
 .kpi{display:flex;gap:14px;margin:0 0 16px}.kpi div{flex:1;border:1px solid #e3e6ec;border-radius:8px;padding:10px 14px}
 .kpi span{display:block;font-size:13px;color:#667}.kpi b{font-size:24px}
-.sum th,.sum td{white-space:nowrap}.r{text-align:right}.sum td.dt{white-space:normal;font-size:12px;color:#556}.tot td{background:#f2f4f8;font-weight:700}
+.sum th,.sum td{white-space:nowrap}.r{text-align:right}.sum td.dt{white-space:normal;font-size:12px;color:#556}.tot td{background:#f2f4f8;font-weight:700}.caution{margin-top:18px;border:1px solid #f0d9a8;background:#fffaf0;border-radius:8px;padding:12px 18px}.caution h3{margin:0 0 6px;font-size:16px}.caution ol{margin:0;padding-left:20px;font-size:12.5px;line-height:1.65;color:#333}.err{color:#c33;font-size:12.5px;margin:6px 0 0}.net{color:#1f7a4d;font-weight:700}.netbox{background:#eef8f2;border-color:#bfe3cd!important}.netbox b{color:#1f7a4d}
 """
 
 def render(data, now, months):
@@ -97,11 +102,18 @@ def render(data, now, months):
     html = f'''<!doctype html><html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
 <h1>퐁네프 · 베른 예약 현황</h1>
 <div class="sub">조회 시각 {now:%Y년 %m월 %d일 %H:%M} (한국시간) · 출처: 대부도펜션시티 실시간예약 페이지(고객용 화면)</div>
-<div class="kpi"><div><span>예약 확정 매출</span><b>{won(grand[0])}</b></div><div><span>결제중 포함 예상 매출</span><b>{won(grand[0]+grand[1])}</b></div></div>
-<table class="sum"><tr><th>월</th><th>객실</th><th>확정</th><th>확정 매출</th><th>결제중</th><th>결제중 금액</th><th>예상 매출</th><th>예약 날짜</th></tr>{rows}</table>
+<div class="kpi"><div><span>예약 확정 매출</span><b>{won(grand[0])}</b></div><div><span>결제중 포함 예상 매출</span><b>{won(grand[0]+grand[1])}</b></div><div class="netbox"><span>예상 실수령 (정산 방식 적용)</span><b>{won(grand[2])}</b></div></div>
+<table class="sum"><tr><th>월</th><th>객실</th><th>확정</th><th>확정 매출</th><th>결제중</th><th>결제중 금액</th><th>예상 매출</th><th>예상 실수령</th><th>예약 날짜</th></tr>{rows}</table>
 <div class="leg"><span class="bk">예약완료</span><span class="pd">결제중</span><span class="av">빈방</span><span class="na">미오픈</span></div>
 <div class="mons">{"".join(month_html(y, m, data) for y, m in months)}</div>
-<div class="note">* 날짜는 입실일(1박) 기준. 금액은 사이트 표시 1박 요금(정가) 합계로, 인원 추가·할인·수수료는 반영되지 않은 예상치입니다. ‘미오픈’ = 예약 페이지에 객실이 표시되지 않은 날(판매중지·관리 차단 추정).{f" ※ {errs}건 조회 실패" if errs else ""}</div>
+<div class="caution"><h3>⚠️ 주의사항</h3><ol>
+<li><b>금액 기준</b>: 고객용 예약 사이트에 표시된 1박 정가(기준 인원) 합계입니다. 추가 인원 요금(1인 30,000원)·할인은 반영되지 않습니다.</li>
+<li><b>예상 실수령 계산식</b>: 펜션금액 − 부대사용료 10% → 남은 금액의 50% → 월 고정공제(퐁네프 175,053원, 베른 168,021원) 차감. 2026년 1~8월 업체 정산서 기준입니다.</li>
+<li><b>부대사용료 10% 확인 필요</b>: 정산서상 매출의 10%를 먼저 뗀 뒤 50:50으로 나누어, 실제 수령액은 매출의 약 45%입니다. 계약서에 있는 조건인지 확인이 필요합니다.</li>
+<li><b>정산서 이상 항목</b>: 정가보다 낮게 정산된 날이 있습니다(예: 퐁네프 3/13·6/11, 베른 6/1·6/22·8/24·8/25). 2026년 1월 퐁네프는 예약 없는 1/11에 관리비 100,000원이 잡혔고, 추가 요금 60,000원이 전액 관리비로 처리됐습니다.</li>
+<li><b>지난 날짜</b>: 사이트에서 지난 날짜는 볼 수 없어, 이번 달 매출은 오늘 이후 예약만 포함됩니다.</li>
+<li><b>표시 의미</b>: 날짜는 입실일(1박) 기준입니다. ‘결제중’은 결제가 끝나지 않은 예약, ‘미오픈’은 사이트에 객실이 표시되지 않은 날(판매중지·관리 차단 추정)입니다.</li>
+</ol>{f"<p class='err'>※ 이번 조회에서 {errs}건 확인 실패</p>" if errs else ""}</div>
 </body></html>'''
     os.makedirs("out", exist_ok=True)
     open("out/report.html", "w", encoding="utf-8").write(html)
@@ -142,7 +154,7 @@ if __name__ == "__main__":
     end = nm.replace(day=calendar.monthrange(nm.year, nm.month)[1])  # 다음 달 말일까지
     months = [(start.year, start.month), (nm.year, nm.month)]
     if "--demo" in sys.argv:
-        data = {start + dt.timedelta(days=i): [(["av", "bk", "pd"][i % 3], 850000), (["bk", "av", "na"][i % 3], 580000)] for i in range((end - start).days + 1)}
+        data = {start + dt.timedelta(days=i): [(["av", "bk", "pd"][i % 3], 520000), (["bk", "av", "na"][i % 3], 380000)] for i in range((end - start).days + 1)}
     else:
         data = collect(start, end)
     text, errs = render(data, now, months)
