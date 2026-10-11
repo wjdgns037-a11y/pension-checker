@@ -32,6 +32,8 @@ def fetch_day(cate, day):
         try:
             r = requests.get(BASE, params=params, headers=HEAD, timeout=20)
             r.encoding = "utf-8"
+            if r.status_code != 200 or "pensionstatus" not in r.text and "평형" not in r.text:
+                raise RuntimeError(f"HTTP {r.status_code}, 응답 길이 {len(r.text)}")
             soup = BeautifulSoup(r.text, "html.parser")
             rooms = {}
             for tr in soup.find_all("tr"):
@@ -45,8 +47,12 @@ def fetch_day(cate, day):
                 rooms[cells[k - 1].strip()] = (st, prices[-1] if prices else 0)
             return rooms
         except Exception as e:
-            print("retry", cate, day, e, file=sys.stderr); time.sleep(3)
+            global LAST_ERR
+            LAST_ERR = f"{type(e).__name__}: {str(e)[:150]}"
+            print("retry", cate, day, LAST_ERR, file=sys.stderr); time.sleep(3 * (attempt + 1))
     return None
+
+LAST_ERR = ""
 
 def collect(start, end):
     data = {}
@@ -103,17 +109,23 @@ def summary(data, months):
 CSS = open(os.path.join(os.path.dirname(__file__), "style.css"), encoding="utf-8").read() + """
 .kpi{display:flex;gap:14px;margin:0 0 16px}.kpi div{flex:1;border:1px solid #e3e6ec;border-radius:8px;padding:10px 14px}
 .kpi span{display:block;font-size:13px;color:#667}.kpi b{font-size:24px}
-.sum th,.sum td{white-space:nowrap}.r{text-align:right}.sum td.dt{white-space:normal;font-size:12px;color:#556}.tot td{background:#f2f4f8;font-weight:700}.ded{margin-top:18px}.ded h3{font-size:16px;margin:0 0 6px}.ded small{font-weight:400;color:#778;font-size:12px}.ded table{border-collapse:collapse;width:100%;font-size:13px}.ded th{background:#f2f4f8;text-align:left;padding:6px 8px}.ded td{border-bottom:1px solid #e3e6ec;padding:6px 8px}.caution{margin-top:18px;border:1px solid #f0d9a8;background:#fffaf0;border-radius:8px;padding:12px 18px}.caution h3{margin:0 0 6px;font-size:16px}.caution ol{margin:0;padding-left:20px;font-size:12.5px;line-height:1.65;color:#333}.err{color:#c33;font-size:12.5px;margin:6px 0 0}.net{color:#1f7a4d;font-weight:700}.netbox{background:#eef8f2;border-color:#bfe3cd!important}.netbox b{color:#1f7a4d}
+.sum th,.sum td{white-space:nowrap}.r{text-align:right}.sum td.dt{white-space:normal;font-size:12px;color:#556}.tot td{background:#f2f4f8;font-weight:700}.fail{background:#fde8e8;border:1px solid #f5a3a3;color:#8a1c1c;border-radius:8px;padding:14px 18px;font-size:14px;line-height:1.7;margin-bottom:16px}.fail b{font-size:18px}.ded{margin-top:18px}.ded h3{font-size:16px;margin:0 0 6px}.ded small{font-weight:400;color:#778;font-size:12px}.ded table{border-collapse:collapse;width:100%;font-size:13px}.ded th{background:#f2f4f8;text-align:left;padding:6px 8px}.ded td{border-bottom:1px solid #e3e6ec;padding:6px 8px}.caution{margin-top:18px;border:1px solid #f0d9a8;background:#fffaf0;border-radius:8px;padding:12px 18px}.caution h3{margin:0 0 6px;font-size:16px}.caution ol{margin:0;padding-left:20px;font-size:12.5px;line-height:1.65;color:#333}.err{color:#c33;font-size:12.5px;margin:6px 0 0}.net{color:#1f7a4d;font-weight:700}.netbox{background:#eef8f2;border-color:#bfe3cd!important}.netbox b{color:#1f7a4d}
 """
 
 def render(data, now, months):
     rows, text, grand = summary(data, months)
     errs = sum(s == "er" for v in data.values() for s, _ in v)
+    total = sum(len(v) for v in data.values()) or 1
+    failed = errs / total > 0.3
+    if failed:
+        text = [f"⚠️ 오늘은 예약 사이트 조회에 실패했어요 ({errs}/{total}건 실패).", "사이트 점검·접속 차단 등으로 보이며, 금액은 표시하지 않았어요.", f"원인: {LAST_ERR or '알 수 없음'}"]
+    kpi = (f'<div class="fail"><b>⚠️ 예약 사이트 조회 실패</b> — {errs}/{total}건을 확인하지 못해 오늘은 매출·실수령을 계산하지 않았습니다.<br>원인: {LAST_ERR or "알 수 없음"}<br>내일 자동으로 다시 확인합니다. 급하면 Actions에서 Run workflow로 다시 실행하세요.</div>'
+           if failed else
+           f'<div class="kpi"><div><span>예약 확정 매출</span><b>{won(grand[0])}</b></div><div><span>결제중 포함 예상 매출</span><b>{won(grand[0]+grand[1])}</b></div><div class="netbox"><span>예상 실수령 (정산 방식 적용)</span><b>{won(grand[2])}</b></div></div>\n<table class="sum"><tr><th>월</th><th>객실</th><th>확정</th><th>확정 매출</th><th>결제중</th><th>결제중 금액</th><th>예상 매출</th><th>예상 실수령</th><th>예약 날짜</th></tr>{rows}</table>')
     html = f'''<!doctype html><html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
 <h1>퐁네프 · 베른 예약 현황</h1>
 <div class="sub">조회 시각 {now:%Y년 %m월 %d일 %H:%M} (한국시간) · 출처: 대부도펜션시티 실시간예약 페이지(고객용 화면)</div>
-<div class="kpi"><div><span>예약 확정 매출</span><b>{won(grand[0])}</b></div><div><span>결제중 포함 예상 매출</span><b>{won(grand[0]+grand[1])}</b></div><div class="netbox"><span>예상 실수령 (정산 방식 적용)</span><b>{won(grand[2])}</b></div></div>
-<table class="sum"><tr><th>월</th><th>객실</th><th>확정</th><th>확정 매출</th><th>결제중</th><th>결제중 금액</th><th>예상 매출</th><th>예상 실수령</th><th>예약 날짜</th></tr>{rows}</table>
+{kpi}
 <div class="leg"><span class="bk">예약완료</span><span class="pd">결제중</span><span class="av">빈방</span><span class="na">미오픈</span></div>
 <div class="mons">{"".join(month_html(y, m, data) for y, m in months)}</div>
 <div class="ded"><h3>월 고정 공제 내역 <small>(매달 실수령에서 빠지는 금액)</small></h3>
@@ -257,6 +269,11 @@ if __name__ == "__main__":
         data = {start + dt.timedelta(days=i): [(["av", "bk", "pd"][i % 3], 520000), (["bk", "av", "na"][i % 3], 380000)] for i in range((end - start).days + 1)}
     else:
         data = collect(start, end)
+        for wait in (300, 600):  # 실패가 많으면 5분, 10분 뒤 다시 시도
+            bad = sum(s == "er" for v in data.values() for s, _ in v)
+            if bad / (2 * len(data)) <= 0.3: break
+            print(f"실패 {bad}건 → {wait // 60}분 뒤 재시도", file=sys.stderr); time.sleep(wait)
+            data = collect(start, end)
     text, errs = render(data, now, months)
     print("\n".join(text))
     open("out/summary.txt", "w", encoding="utf-8").write("\n".join(text))
