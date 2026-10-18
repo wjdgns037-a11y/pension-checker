@@ -17,14 +17,22 @@ jobs:
           sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
-      - name: 현황 이미지 생성
-        run: python check.py --no-send --evidence
-      - name: 증거 기록 저장 (비공개 저장소 pension-evidence)
+      - name: 기록 저장소 불러오기 (지난 날짜 장부)
         continue-on-error: true
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
+        run: git clone "https://x-access-token:${GH_PAT}@github.com/${{ github.repository_owner }}/pension-evidence.git" ev
+      - name: 현황 이미지 생성
+        env:
+          LEDGER: ev/ledger.json
+          EVIDENCE_DIR: ev/records
         run: |
-          git clone "https://x-access-token:${GH_PAT}@github.com/${{ github.repository_owner }}/pension-evidence.git" ev
+          mkdir -p ev
+          python check.py --no-send --evidence
+      - name: 증거 기록 저장 (비공개 저장소 pension-evidence)
+        continue-on-error: true
+        run: |
+          test -d ev/.git || exit 0
           mkdir -p ev/records
           cp -r out/evidence/* ev/records/
           d=$(ls out/evidence | head -1); cp out/report.png "ev/records/$d/현황표.png"
