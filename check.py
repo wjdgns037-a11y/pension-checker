@@ -9,7 +9,8 @@ KST = ZoneInfo("Asia/Seoul")
 BASE = "http://pensioncity.kr/bbs/board.php"
 TARGETS = [("퐁네프", "파리", "파리동"), ("베른", "스위스", "스위스동")]  # (객실명, rm_cate, 동 이름)
 STATUS = {"완료": "bk", "예약하기": "av", "결제중": "pd", "대기": "pd"}
-LABEL = {"bk": "예약", "av": "빈방", "pd": "결제중", "na": "미오픈", "er": "확인실패"}
+LABEL = {"bk": "예약", "av": "빈방", "pd": "결제중", "na": "미오픈", "er": "확인실패", "nd": "기록없음"}
+REV = {v: k for k, v in LABEL.items()}
 # 위탁업체 정산 방식 (2026년 1~8월 정산서 기준)
 FEE_RATE = 0.10   # 부대사용료: 펜션금액의 10% 선공제
 SHARE = 0.50      # 남은 금액(실사용금액)의 50%가 건축주 몫
@@ -54,6 +55,54 @@ def fetch_day(cate, day):
 
 LAST_ERR = ""
 
+# ---------------- 기록 장부 (지난 날짜 보존) ----------------
+# 사이트는 지난 날짜를 보여주지 않으므로, 매일 본 상태·요금을 장부(ledger.json)에 쌓아
+# 지난 날짜는 '마지막으로 확인된 상태'로 월 매출에 포함한다.
+def load_ledger(path, records_dir=None):
+    led = {}
+    if path and os.path.exists(path):
+        try: led = json.load(open(path, encoding="utf-8"))
+        except Exception as e: print("장부 읽기 실패:", e, file=sys.stderr)
+    if records_dir and os.path.isdir(records_dir):  # 예전 기록(status.csv)으로 빈 곳 채우기
+        for day in sorted(os.listdir(records_dir)):
+            f = os.path.join(records_dir, day, "status.csv")
+            if not os.path.exists(f): continue
+            for line in open(f, encoding="utf-8-sig").read().splitlines()[1:]:
+                try:
+                    seen, d, room, lab, price = line.split(",")
+                    st = REV.get(lab)
+                    if st in ("bk", "pd", "av", "na"):
+                        cur = led.setdefault(d, {}).get(room)
+                        if not cur or cur["seen"] <= seen:
+                            led[d][room] = {"s": st, "p": int(price), "seen": seen}
+                except ValueError:
+                    pass
+    for d, rooms in SEED.items():
+        for r, (st, pr) in rooms.items():
+            led.setdefault(d, {}).setdefault(r, {"s": st, "p": pr, "seen": "2026-10-10 01:37"})
+    return led
+
+# 자동 기록 시작 전, 10/10 첫 현황표(01:37)에서 확인된 내용
+SEED = {"2026-10-10": {"퐁네프": ("bk", 850000), "베른": ("na", 0)},
+        "2026-10-11": {"퐁네프": ("av", 520000), "베른": ("na", 0)}}
+
+def update_ledger(led, data, now):
+    seen = f"{now:%Y-%m-%d %H:%M}"
+    for d, row in data.items():
+        for j, (s, p) in enumerate(row):
+            if s in ("bk", "pd", "av", "na"):
+                led.setdefault(str(d), {})[TARGETS[j][0]] = {"s": s, "p": p, "seen": seen}
+    return led
+
+def merge_past(data, led, first_day, today):
+    """이번 달 1일 ~ 어제까지는 장부의 마지막 기록으로 채운다."""
+    d = first_day
+    while d < today:
+        rec = led.get(str(d), {})
+        data[d] = [((rec[r]["s"], rec[r]["p"]) if r in rec else ("nd", 0)) for r, _, _ in TARGETS]
+        d += dt.timedelta(days=1)
+    return data
+
 def collect(start, end):
     data = {}
     d = start
@@ -78,18 +127,21 @@ def month_html(y, m, data):
             if d.month != m: h += '<td class="out"></td>'; continue
             cls = "sun" if i == 0 else "sat" if i == 6 else ""
             if d in data:
-                inner = "".join(f'<div class="chip {s}"><b>{TARGETS[j][0]}</b>{man(p) if s in ("bk", "pd") and p else LABEL[s]}</div>' for j, (s, p) in enumerate(data[d]))
+                pastcls = " old" if TODAY and d < TODAY else ""
+                inner = "".join(f'<div class="chip {s}{pastcls}"><b>{TARGETS[j][0]}</b>{man(p) if s in ("bk", "pd") and p else LABEL[s]}</div>' for j, (s, p) in enumerate(data[d]))
             else:
                 inner = '<div class="past">지난 날짜</div>'
             h += f'<td><div class="dn {cls}">{d.day}</div>{inner}</td>'
         h += "</tr>"
     return h + "</table></div>"
 
+TODAY = None
+
 def won(n): return f"{n:,}원"
 def man(n): return f"{round(n/10000):,}만"
 
 def summary(data, months):
-    rows, text, grand = "", [], [0, 0, 0]
+    rows, text, grand = "", [], []
     for y, m in months:
         ds = sorted(d for d in data if (d.year, d.month) == (y, m))
         mt = [0, 0, 0]
@@ -103,30 +155,31 @@ def summary(data, months):
             text.append(f"[{m}월] {room} {len(bk)}박 {man(bs)}" + (f" (+결제중 {len(pd)}박 {man(ps)})" if pd else ""))
         rows += f'<tr class="tot"><td>{m}월</td><td>합계</td><td></td><td class="r">{won(mt[0])}</td><td></td><td class="r">{won(mt[1])}</td><td class="r"><b>{won(mt[0]+mt[1])}</b></td><td class="r net">{won(mt[2])}</td><td></td></tr>'
         text.append(f"[{m}월] 예상 매출 {man(mt[0]+mt[1])} → 실수령 {man(mt[2])}")
-        grand[0] += mt[0]; grand[1] += mt[1]; grand[2] += mt[2]
+        grand.append((m, mt))
     return rows, text, grand
 
 CSS = open(os.path.join(os.path.dirname(__file__), "style.css"), encoding="utf-8").read() + """
 .kpi{display:flex;gap:14px;margin:0 0 16px}.kpi div{flex:1;border:1px solid #e3e6ec;border-radius:8px;padding:10px 14px}
 .kpi span{display:block;font-size:13px;color:#667}.kpi b{font-size:24px}
-.sum th,.sum td{white-space:nowrap}.r{text-align:right}.sum td.dt{white-space:normal;font-size:12px;color:#556}.tot td{background:#f2f4f8;font-weight:700}.fail{background:#fde8e8;border:1px solid #f5a3a3;color:#8a1c1c;border-radius:8px;padding:14px 18px;font-size:14px;line-height:1.7;margin-bottom:16px}.fail b{font-size:18px}.ded{margin-top:18px}.ded h3{font-size:16px;margin:0 0 6px}.ded small{font-weight:400;color:#778;font-size:12px}.ded table{border-collapse:collapse;width:100%;font-size:13px}.ded th{background:#f2f4f8;text-align:left;padding:6px 8px}.ded td{border-bottom:1px solid #e3e6ec;padding:6px 8px}.caution{margin-top:18px;border:1px solid #f0d9a8;background:#fffaf0;border-radius:8px;padding:12px 18px}.caution h3{margin:0 0 6px;font-size:16px}.caution ol{margin:0;padding-left:20px;font-size:12.5px;line-height:1.65;color:#333}.err{color:#c33;font-size:12.5px;margin:6px 0 0}.net{color:#1f7a4d;font-weight:700}.netbox{background:#eef8f2;border-color:#bfe3cd!important}.netbox b{color:#1f7a4d}
+.sum th,.sum td{white-space:nowrap}.r{text-align:right}.sum td.dt{white-space:normal;font-size:12px;color:#556}.tot td{background:#f2f4f8;font-weight:700}.fail{background:#fde8e8;border:1px solid #f5a3a3;color:#8a1c1c;border-radius:8px;padding:14px 18px;font-size:14px;line-height:1.7;margin-bottom:16px}.fail b{font-size:18px}.ded{margin-top:18px}.ded h3{font-size:16px;margin:0 0 6px}.ded small{font-weight:400;color:#778;font-size:12px}.ded table{border-collapse:collapse;width:100%;font-size:13px}.ded th{background:#f2f4f8;text-align:left;padding:6px 8px}.ded td{border-bottom:1px solid #e3e6ec;padding:6px 8px}.caution{margin-top:18px;border:1px solid #f0d9a8;background:#fffaf0;border-radius:8px;padding:12px 18px}.caution h3{margin:0 0 6px;font-size:16px}.caution ol{margin:0;padding-left:20px;font-size:12.5px;line-height:1.65;color:#333}.err{color:#c33;font-size:12.5px;margin:6px 0 0}.net{color:#1f7a4d;font-weight:700}.kpi .mh{flex:0 0 64px;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;background:#1f3a5f;color:#fff;border:none}.chip.old{opacity:.6}.nd{background:#fff;color:#bbb;border:1px dotted #ccc}.oldl{color:#888;font-size:12px}.netbox{background:#eef8f2;border-color:#bfe3cd!important}.netbox b{color:#1f7a4d}
 """
 
 def render(data, now, months):
     rows, text, grand = summary(data, months)
-    errs = sum(s == "er" for v in data.values() for s, _ in v)
-    total = sum(len(v) for v in data.values()) or 1
+    live = {d: v for d, v in data.items() if not TODAY or d >= TODAY}
+    errs = sum(s == "er" for v in live.values() for s, _ in v)
+    total = sum(len(v) for v in live.values()) or 1
     failed = errs / total > 0.3
     if failed:
         text = [f"⚠️ 오늘은 예약 사이트 조회에 실패했어요 ({errs}/{total}건 실패).", "사이트 점검·접속 차단 등으로 보이며, 금액은 표시하지 않았어요.", f"원인: {LAST_ERR or '알 수 없음'}"]
     kpi = (f'<div class="fail"><b>⚠️ 예약 사이트 조회 실패</b> — {errs}/{total}건을 확인하지 못해 오늘은 매출·실수령을 계산하지 않았습니다.<br>원인: {LAST_ERR or "알 수 없음"}<br>내일 자동으로 다시 확인합니다. 급하면 Actions에서 Run workflow로 다시 실행하세요.</div>'
            if failed else
-           f'<div class="kpi"><div><span>예약 확정 매출</span><b>{won(grand[0])}</b></div><div><span>결제중 포함 예상 매출</span><b>{won(grand[0]+grand[1])}</b></div><div class="netbox"><span>예상 실수령 (정산 방식 적용)</span><b>{won(grand[2])}</b></div></div>\n<table class="sum"><tr><th>월</th><th>객실</th><th>확정</th><th>확정 매출</th><th>결제중</th><th>결제중 금액</th><th>예상 매출</th><th>예상 실수령</th><th>예약 날짜</th></tr>{rows}</table>')
+           "".join(f'<div class="kpi"><div class="mh">{m}월</div><div><span>예약 확정 매출</span><b>{won(t[0])}</b></div><div><span>결제중 포함 예상 매출</span><b>{won(t[0]+t[1])}</b></div><div class="netbox"><span>예상 실수령 (정산 방식 적용)</span><b>{won(t[2])}</b></div></div>' for m, t in grand) + f'<table class="sum"><tr><th>월</th><th>객실</th><th>확정</th><th>확정 매출</th><th>결제중</th><th>결제중 금액</th><th>예상 매출</th><th>예상 실수령</th><th>예약 날짜</th></tr>{rows}</table>')
     html = f'''<!doctype html><html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
 <h1>퐁네프 · 베른 예약 현황</h1>
 <div class="sub">조회 시각 {now:%Y년 %m월 %d일 %H:%M} (한국시간) · 출처: 대부도펜션시티 실시간예약 페이지(고객용 화면)</div>
 {kpi}
-<div class="leg"><span class="bk">예약완료</span><span class="pd">결제중</span><span class="av">빈방</span><span class="na">미오픈</span></div>
+<div class="leg"><span class="bk">예약완료</span><span class="pd">결제중</span><span class="av">빈방</span><span class="na">미오픈</span><span class="nd">기록없음</span><span class="oldl">흐린 칸 = 지난 날짜(마지막 확인 기록)</span></div>
 <div class="mons">{"".join(month_html(y, m, data) for y, m in months)}</div>
 <div class="ded"><h3>월 고정 공제 내역 <small>(매달 실수령에서 빠지는 금액)</small></h3>
 <table><tr><th>항목</th><th>퐁네프</th><th>베른</th><th>정산서 설명</th></tr>
@@ -138,7 +191,7 @@ def render(data, now, months):
 <li><b>부대사용료 10% 확인 필요</b>: 정산서상 매출의 10%를 먼저 뗀 뒤 50:50으로 나누어, 실제 수령액은 매출의 약 45%입니다. 계약서에 있는 조건인지 확인이 필요합니다.</li>
 <li><b>정산서 이상 항목</b>: 정가보다 낮게 정산된 날이 있습니다(예: 퐁네프 3/13·6/11, 베른 6/1·6/22·8/24·8/25). 2026년 1월 퐁네프는 예약 없는 1/11에 관리비 100,000원이 잡혔고, 추가 요금 60,000원이 전액 관리비로 처리됐습니다. 정화조는 같은 금액을 퐁네프 42가구·베른 41가구로 다르게 나눴고, 진입도로(16,667원)는 16,700원으로 올림 처리됐습니다.</li>
 <li><b>고정 공제 부담</b>: 매출은 업체와 50:50으로 나누지만, 위 고정 공제는 건축주 몫에서만 빠집니다. 예약이 적은 달일수록 실수령 비율이 크게 줄어듭니다.</li>
-<li><b>지난 날짜</b>: 사이트에서 지난 날짜는 볼 수 없어, 이번 달 매출은 오늘 이후 예약만 포함됩니다.</li>
+<li><b>지난 날짜</b>: 사이트는 지난 날짜를 보여주지 않아, 매일 확인한 기록(장부)으로 이번 달 지난 날짜를 채웁니다. 자동 조회를 시작하기 전 날짜는 ‘기록없음’으로 표시되고 매출에서 빠집니다.</li>
 <li><b>표시 의미</b>: 날짜는 입실일(1박) 기준입니다. ‘결제중’은 결제가 끝나지 않은 예약, ‘미오픈’은 사이트에 객실이 표시되지 않은 날(판매중지·관리 차단 추정)입니다.</li>
 </ol>{f"<p class='err'>※ 이번 조회에서 {errs}건 확인 실패</p>" if errs else ""}</div>
 </body></html>'''
@@ -265,6 +318,9 @@ if __name__ == "__main__":
     nm = (start.replace(day=28) + dt.timedelta(days=10))           # 다음 달
     end = nm.replace(day=calendar.monthrange(nm.year, nm.month)[1])  # 다음 달 말일까지
     months = [(start.year, start.month), (nm.year, nm.month)]
+    TODAY = start
+    ledger_path = os.environ.get("LEDGER", "ledger.json")
+    led = load_ledger(ledger_path, os.environ.get("EVIDENCE_DIR"))
     if "--demo" in sys.argv:
         data = {start + dt.timedelta(days=i): [(["av", "bk", "pd"][i % 3], 520000), (["bk", "av", "na"][i % 3], 380000)] for i in range((end - start).days + 1)}
     else:
@@ -274,12 +330,20 @@ if __name__ == "__main__":
             if bad / (2 * len(data)) <= 0.3: break
             print(f"실패 {bad}건 → {wait // 60}분 뒤 재시도", file=sys.stderr); time.sleep(wait)
             data = collect(start, end)
+    if "--demo" not in sys.argv:
+        led = update_ledger(led, data, now)
+        try:
+            json.dump(led, open(ledger_path, "w", encoding="utf-8"), ensure_ascii=False, indent=0, sort_keys=True)
+        except Exception as e:
+            print("장부 저장 실패:", e, file=sys.stderr)
+    live_data = dict(data)
+    data = merge_past(dict(data), led, start.replace(day=1), start)
     text, errs = render(data, now, months)
     print("\n".join(text))
     open("out/summary.txt", "w", encoding="utf-8").write("\n".join(text))
     if "--evidence" in sys.argv and "--demo" not in sys.argv:
         try:
-            evidence(data, now, os.path.join("out", "evidence", f"{now:%Y-%m-%d}"))
+            evidence(live_data, now, os.path.join("out", "evidence", f"{now:%Y-%m-%d}"))
         except Exception as e:
             print("증거 기록 실패(현황표 전송은 계속):", e, file=sys.stderr)
     if os.environ.get("KAKAO_REST_KEY") and "--no-send" not in sys.argv:
